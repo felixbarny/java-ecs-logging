@@ -41,13 +41,11 @@ import org.apache.logging.log4j.core.layout.ByteBufferDestination;
 import org.apache.logging.log4j.core.layout.Encoder;
 import org.apache.logging.log4j.core.lookup.StrSubstitutor;
 import org.apache.logging.log4j.core.util.KeyValuePair;
-import org.apache.logging.log4j.core.util.StringBuilderWriter;
 import org.apache.logging.log4j.message.MapMessage;
 import org.apache.logging.log4j.message.Message;
 import org.apache.logging.log4j.util.StringBuilderFormattable;
 import org.apache.logging.log4j.util.TriConsumer;
 
-import java.io.PrintWriter;
 import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.Collection;
@@ -59,7 +57,6 @@ import java.util.Set;
 @Plugin(name = "EcsLayout", category = Node.CATEGORY, elementType = Layout.ELEMENT_TYPE)
 public class EcsLayout extends AbstractStringLayout {
 
-    private static final ThreadLocal<StringBuilder> messageStringBuilder = new ThreadLocal<StringBuilder>();
     public static final Charset UTF_8 = Charset.forName("UTF-8");
 
     private final TriConsumer<String, Object, StringBuilder> WRITE_KEY_VALUES_INTO = new TriConsumer<String, Object, StringBuilder>() {
@@ -78,14 +75,16 @@ public class EcsLayout extends AbstractStringLayout {
 
     private final KeyValuePair[] additionalFields;
     private final Set<String> topLevelLabels;
+    private final boolean stackTraceAsArray;
     private String serviceName;
     private boolean includeMarkers;
 
-    private EcsLayout(Configuration config, String serviceName, boolean includeMarkers, KeyValuePair[] additionalFields, Collection<String> topLevelLabels) {
+    private EcsLayout(Configuration config, String serviceName, boolean includeMarkers, KeyValuePair[] additionalFields, Collection<String> topLevelLabels, boolean stackTraceAsArray) {
         super(config, UTF_8, null, null);
         this.serviceName = serviceName;
         this.includeMarkers = includeMarkers;
         this.topLevelLabels = new HashSet<String>(topLevelLabels);
+        this.stackTraceAsArray = stackTraceAsArray;
         this.topLevelLabels.add("trace.id");
         this.topLevelLabels.add("transaction.id");
         this.additionalFields = additionalFields;
@@ -94,16 +93,6 @@ public class EcsLayout extends AbstractStringLayout {
     @PluginBuilderFactory
     public static EcsLayout.Builder newBuilder() {
         return new EcsLayout.Builder().asBuilder();
-    }
-
-    private static StringBuilder getMessageStringBuilder() {
-        StringBuilder result = messageStringBuilder.get();
-        if (result == null) {
-            result = new StringBuilder(DEFAULT_STRING_BUILDER_SIZE);
-            messageStringBuilder.set(result);
-        }
-        result.setLength(0);
-        return result;
     }
 
     private static boolean valueNeedsLookup(final String value) {
@@ -132,6 +121,7 @@ public class EcsLayout extends AbstractStringLayout {
         EcsJsonSerializer.serializeLoggerName(builder, event.getLoggerName());
         serializeLabels(event, builder);
         serializeTags(event, builder);
+        EcsJsonSerializer.serializeException(builder, event.getThrown(), stackTraceAsArray);
         EcsJsonSerializer.serializeObjectEnd(builder);
         return builder;
     }
@@ -143,7 +133,7 @@ public class EcsLayout extends AbstractStringLayout {
                 for (KeyValuePair additionalField : additionalFields) {
                     CharSequence value = null;
                     if (valueNeedsLookup(additionalField.getValue())) {
-                        StringBuilder lookupValue = getMessageStringBuilder();
+                        StringBuilder lookupValue = EcsJsonSerializer.getMessageStringBuilder();
                         lookupValue.append(additionalField.getValue());
                         if (strSubstitutor.replaceIn(event, lookupValue)) {
                             value = lookupValue;
@@ -205,7 +195,7 @@ public class EcsLayout extends AbstractStringLayout {
         if (message instanceof CharSequence) {
             JsonUtils.quoteAsString(((CharSequence) message), builder);
         } else if (gcFree && message instanceof StringBuilderFormattable) {
-            final StringBuilder messageBuffer = getMessageStringBuilder();
+            final StringBuilder messageBuffer = EcsJsonSerializer.getMessageStringBuilder();
             try {
                 ((StringBuilderFormattable) message).formatTo(messageBuffer);
                 JsonUtils.quoteAsString(messageBuffer, builder);
@@ -215,23 +205,11 @@ public class EcsLayout extends AbstractStringLayout {
         } else {
             JsonUtils.quoteAsString(EcsJsonSerializer.toNullSafeString(message.getFormattedMessage()), builder);
         }
-        if (thrown != null) {
-            builder.append("\\n");
-            JsonUtils.quoteAsString(formatThrowable(thrown), builder);
-        }
         builder.append("\", ");
         if (message instanceof MapMessage) {
             MapMessage mapMessage = (MapMessage) message;
             mapMessage.forEach(WRITE_KEY_VALUES_INTO, builder);
         }
-    }
-
-    private static CharSequence formatThrowable(final Throwable throwable) {
-        StringBuilderWriter sw = new StringBuilderWriter(getMessageStringBuilder());
-        final PrintWriter pw = new PrintWriter(sw);
-        throwable.printStackTrace(pw);
-        pw.flush();
-        return sw.getBuilder();
     }
 
     public static class Builder extends AbstractStringLayout.Builder<EcsLayout.Builder>
@@ -241,6 +219,8 @@ public class EcsLayout extends AbstractStringLayout {
         private String serviceName;
         @PluginBuilderAttribute("includeMarkers")
         private boolean includeMarkers = false;
+        @PluginBuilderAttribute("stackTraceAsArray")
+        private boolean stackTraceAsArray = false;
         @PluginElement("AdditionalField")
         private KeyValuePair[] additionalFields;
         @PluginElement("TopLevelLabels")
@@ -292,9 +272,18 @@ public class EcsLayout extends AbstractStringLayout {
             return asBuilder();
         }
 
+        public EcsLayout.Builder setStackTraceAsArray(boolean stackTraceAsArray) {
+            this.stackTraceAsArray = stackTraceAsArray;
+            return asBuilder();
+        }
+
         @Override
         public EcsLayout build() {
-            return new EcsLayout(getConfiguration(), serviceName, includeMarkers, additionalFields, topLevelLabels == null ? Collections.<String>emptyList() : Arrays.<String>asList(topLevelLabels));
+            return new EcsLayout(getConfiguration(), serviceName, includeMarkers, additionalFields, topLevelLabels == null ? Collections.<String>emptyList() : Arrays.<String>asList(topLevelLabels), stackTraceAsArray);
+        }
+
+        public boolean isStackTraceAsArray() {
+            return stackTraceAsArray;
         }
     }
 }
