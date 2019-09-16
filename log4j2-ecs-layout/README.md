@@ -19,13 +19,6 @@ Add a dependency to your application
 
 Instead of the usual `<PatternLayout/>`, use `<EcsLayout serviceName="my-app"/>`.
 
-If you want to include [Markers](https://logging.apache.org/log4j/2.0/manual/markers.html) as tags,
-set the `includeMarkers` attribute to `true` (default: `false`).
-
-```
-<EcsLayout serviceName="my-app" includeMarkers="true"/>
-```
-
 ## Example
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -46,3 +39,22 @@ set the `includeMarkers` attribute to `true` (default: `false`).
     </Loggers>
 </Configuration>
 ```
+
+## Layout Parameters
+
+|Parameter name   |Type   |Default|Description|
+|-----------------|-------|-------|-----------|
+|serviceName      |String |       |Sets the `service.name` field so you can filter your logs by a particular service |
+|includeMarkers   |boolean|`false`|Log [Markers](https://logging.apache.org/log4j/2.0/manual/markers.html) as `tags` |
+|stackTraceAsArray|boolean|`false`|Serializes the `error.stack_trace` as a JSON array where each element is in a new line to improve readability. Note that this requires a slightly more complex Filebeat setup. See also https://github.com/elastic/java-ecs-logging/blob/master/README.md#TODO|
+
+To include any custom field in the output, use following syntax:
+
+```xml
+  <EcsLayout>
+    <KeyValuePair key="additionalField1" value="constant value"/>
+    <KeyValuePair key="additionalField2" value="$${ctx:key}"/>
+  </EcsLayout>
+```
+
+Custom fields are included in the order they are declared. The values support [lookups](https://logging.apache.org/log4j/2.x/manual/lookups.html).
