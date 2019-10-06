@@ -11,9 +11,9 @@
  * the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
+ *
  *   http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
@@ -30,6 +30,13 @@ package co.elastic.logging;
  */
 public final class JsonUtils {
 
+    /*
+     * A single char can become max 6 chars long, for example "\u0000"
+     * we want to write to the buffer 512 times before flushing to the StringBuilder.
+     * The advantage is that we can reduce the bounds checks and ensuring capacity
+     * to only once every 512 chars as opposed to doing it for every single char.
+     */
+    static final int CHAR_BUFFER_SIZE = 512 * 6;
     private final static char[] HC = "0123456789ABCDEF".toCharArray();
 
     /**
@@ -37,6 +44,7 @@ public final class JsonUtils {
      * 7-bit ASCII range need to be quoted.
      */
     private final static int[] sOutputEscapes128;
+    private final static ThreadLocal<char[]> charBufferThreadLocal = new ThreadLocal<char[]>();
 
     static {
         int[] table = new int[128];
@@ -57,16 +65,34 @@ public final class JsonUtils {
         sOutputEscapes128 = table;
     }
 
+    private static char[] getCharBuffer() {
+        char[] charBuffer = charBufferThreadLocal.get();
+        if (charBuffer == null) {
+
+            charBuffer = new char[CHAR_BUFFER_SIZE];
+            charBufferThreadLocal.set(charBuffer);
+        }
+        return charBuffer;
+    }
+
     public static void quoteAsString(CharSequence content, StringBuilder sb) {
+        char[] buf = getCharBuffer();
+        int bufPos = 0;
         final int[] escCodes = sOutputEscapes128;
         final int escLen = escCodes.length;
         for (int i = 0, len = content.length(); i < len; ++i) {
+            // flush every 512 iterations
+            // the char buffer can at most contain 512 * 6 chars at this point
+            if (i > 0 && (i & 511) == 0) {
+                sb.append(buf, 0, bufPos);
+                bufPos = 0;
+            }
             char c = content.charAt(i);
             if (c >= escLen || escCodes[c] == 0) {
-                sb.append(c);
+                buf[bufPos++] = c;
                 continue;
             }
-            sb.append('\\');
+            buf[bufPos++] = '\\';
             int escCode = escCodes[c];
             if (escCode < 0) { // generic quoting (hex value)
                 // The only negative value sOutputEscapes128 returns
@@ -77,16 +103,17 @@ public final class JsonUtils {
                 // CharacterEscapes.ESCAPE_XXX values.
 
                 // We know that it has to fit in just 2 hex chars
-                sb.append('u');
-                sb.append('0');
-                sb.append('0');
+                buf[bufPos++] = 'u';
+                buf[bufPos++] = '0';
+                buf[bufPos++] = '0';
                 int value = c;  // widening
-                sb.append(HC[value >> 4]);
-                sb.append(HC[value & 0xF]);
+                buf[bufPos++] = HC[value >> 4];
+                buf[bufPos++] = HC[value & 0xF];
             } else { // "named", i.e. prepend with slash
-                sb.append((char) escCode);
+                buf[bufPos++] = (char) escCode;
             }
         }
+        sb.append(buf, 0, bufPos);
     }
 
 }
